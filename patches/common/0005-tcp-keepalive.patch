@@ -1,0 +1,68 @@
+diff --git a/libretro-common/net/net_socket.c b/libretro-common/net/net_socket.c
+index 53dcef0..c60ec54 100644
+--- a/libretro-common/net/net_socket.c
++++ b/libretro-common/net/net_socket.c
+@@ -32,6 +32,45 @@
+ 
+ #include <net/net_socket.h>
+ 
++#if defined(__linux__)
++#include <netinet/tcp.h>
++#endif
++
++/* spruce: a TCP connection whose peer vanished (Wi-Fi restarted after a
++ * sleep) must not keep a blocking read waiting forever: with no keepalive
++ * and nothing left to send, the kernel never notices it is dead and
++ * RetroArch hangs on exit (spruceOS #1760). Probes start after 30 s of
++ * silence, 3 of them 10 s apart, and unacknowledged data is given 60 s:
++ * a dead connection now fails in about a minute. */
++static void socket_set_keepalive(int fd, const struct addrinfo *addr)
++{
++#if defined(__linux__) && defined(SO_KEEPALIVE) && defined(TCP_KEEPIDLE) \
++   && defined(TCP_KEEPINTVL) && defined(TCP_KEEPCNT)
++   int on    = 1;
++   int idle  = 30;
++   int intvl = 10;
++   int cnt   = 3;
++
++   if (addr->ai_socktype != SOCK_STREAM)
++      return;
++
++   setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE,  &on,    sizeof(on));
++   setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
++   setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
++   setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
++#ifdef TCP_USER_TIMEOUT
++   {
++      unsigned int user_timeout = 60000;
++      setsockopt(fd, IPPROTO_TCP, TCP_USER_TIMEOUT,
++            &user_timeout, sizeof(user_timeout));
++   }
++#endif
++#else
++   (void)fd;
++   (void)addr;
++#endif
++}
++
+ int socket_init(void **address, uint16_t port, const char *server,
+       enum socket_type type, int family)
+ {
+@@ -705,6 +744,8 @@ int socket_connect(int fd, void *data)
+    }
+ #endif
+ 
++   socket_set_keepalive(fd, addr);
++
+    return connect(fd, addr->ai_addr, addr->ai_addrlen);
+ }
+ 
+@@ -735,6 +776,8 @@ bool socket_connect_with_timeout(int fd, void *data, int timeout)
+    }
+ #endif
+ 
++   socket_set_keepalive(fd, addr);
++
+    res = connect(fd, addr->ai_addr, addr->ai_addrlen);
+    if (res)
+    {
